@@ -12,18 +12,13 @@ const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
 const app = express();
-
-// CHANGED: rawBody save karte hain taake GitHub ka signature verify ho sake
 app.use(express.json({
   verify: (req, res, buf) => { req.rawBody = buf; },
 }));
 app.use(require('cors')());
 
-// NEW: deploy ke baad proxy (ngrok/hosting) ke peeche asli IP pehchanne ke liye
 app.set('trust proxy', 1);
 
-// NEW: rate limiting - ek IP se zyada koshishon par rok deta hai
-// Login: 10 koshish har 15 minute mein
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
@@ -32,7 +27,7 @@ const loginLimiter = rateLimit({
   message: { error: 'Too many attempts. Please try again after 15 minutes.' },
 });
 
-// Signup: 10 per ghanta
+ 
 const signupLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 10,
@@ -41,7 +36,7 @@ const signupLimiter = rateLimit({
   message: { error: 'Too many signups from this device. Please try again later.' },
 });
 
-// Forgot/Reset password: 5 per ghanta (email spam rokne ke liye)
+ 
 const passwordResetLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 5,
@@ -54,9 +49,6 @@ mongoose.connect(process.env.MONGODB_URI)
   .then(() => console.log('MongoDB connected successfully'))
   .catch((err) => console.error('MongoDB connection error:', err.message));
 
-// ---------- User model ----------
-// resetToken/resetTokenExpiry forgot-password flow ke liye
-
 const userSchema = new mongoose.Schema({
   name: String,
   email: { type: String, required: true, unique: true },
@@ -67,8 +59,7 @@ const userSchema = new mongoose.Schema({
 });
 
 const User = mongoose.model('User', userSchema);
-
-// ---------- Review model ----------
+ 
 
 const reviewSchema = new mongoose.Schema({
   repoName: String,
@@ -81,7 +72,7 @@ const reviewSchema = new mongoose.Schema({
 
 const Review = mongoose.model('Review', reviewSchema);
 
-// ---------- Auth middleware ----------
+ 
 
 function verifyToken(req, res, next) {
   const authHeader = req.headers.authorization;
@@ -97,7 +88,7 @@ function verifyToken(req, res, next) {
   }
 }
 
-// ---------- NEW: GitHub webhook signature verification ----------
+ 
 
 function verifyGithubSignature(req, res, next) {
   const secret = process.env.GITHUB_WEBHOOK_SECRET;
@@ -128,10 +119,7 @@ function verifyGithubSignature(req, res, next) {
   next();
 }
 
-// ---------- Email function (Resend) ----------
-// Resend Gmail App Password se zyada aasan hai, aur real companies bhi isi tarah
-// ki service (SendGrid, Resend, Postmark) use karti hain.
-
+ 
 async function sendResetEmail(toEmail, resetLink) {
   await axios.post(
     'https://api.resend.com/emails',
@@ -160,16 +148,25 @@ async function sendResetEmail(toEmail, resetLink) {
     }
   );
 }
-
-// ---------- GitHub App functions ----------
+ 
 
 function generateJWT() {
-  const privateKey = fs.readFileSync(process.env.PRIVATE_KEY_PATH, 'utf8');
+  let privateKey;
+
+  if (process.env.GITHUB_PRIVATE_KEY) {
+    // Render / production
+    privateKey = process.env.GITHUB_PRIVATE_KEY.replace(/\\n/g, '\n');
+  } else {
+    // Local development
+    privateKey = fs.readFileSync(process.env.PRIVATE_KEY_PATH, 'utf8');
+  }
+
   const payload = {
     iat: Math.floor(Date.now() / 1000) - 60,
     exp: Math.floor(Date.now() / 1000) + (9 * 60),
     iss: process.env.APP_ID,
   };
+
   return jwt.sign(payload, privateKey, { algorithm: 'RS256' });
 }
 
@@ -205,7 +202,6 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// CHANGED: ek model busy ho to agla model try karta hai
 const GEMINI_MODELS = ['gemini-3.8-flash', 'gemini-flash-lite-latest', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'];
 
 async function reviewWithGemini(diffText, retriesPerModel = 2) {
@@ -253,7 +249,7 @@ ${diffText}`;
   throw lastError;
 }
 
-// ---------- Auth routes ----------
+ 
 
 app.post('/api/auth/signup', signupLimiter, async (req, res) => {
   try {
@@ -297,14 +293,12 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
   }
 });
 
-// Step 1: user apna email deta hai, hum reset link email karte hain
+ 
 app.post('/api/auth/forgot-password', passwordResetLimiter, async (req, res) => {
   try {
     const { email } = req.body;
     const user = await User.findOne({ email });
-
-    // Security ke liye: user mile ya na mile, hum hamesha same success message dete hain,
-    // taake koi ye pata na laga sake ke kaunsa email registered hai.
+ 
     if (!user) {
       return res.json({ message: 'If that email exists, a reset link has been sent.' });
     }
@@ -324,7 +318,7 @@ app.post('/api/auth/forgot-password', passwordResetLimiter, async (req, res) => 
   }
 });
 
-// Step 2: user link se aata hai, naya password set karta hai
+ 
 app.post('/api/auth/reset-password', passwordResetLimiter, async (req, res) => {
   try {
     const { token, password } = req.body;
@@ -349,7 +343,7 @@ app.post('/api/auth/reset-password', passwordResetLimiter, async (req, res) => {
   }
 });
 
-// ---------- Other routes ----------
+ 
 
 app.get('/', (req, res) => {
   res.send('ReviewPilot backend is running');
@@ -374,7 +368,7 @@ app.get('/api/reviews/:id', verifyToken, async (req, res) => {
   }
 });
 
-// Mark a review as false alarm (or undo it)
+ 
 app.patch('/api/reviews/:id/false-alarm', verifyToken, async (req, res) => {
   try {
     const review = await Review.findById(req.params.id);
@@ -389,12 +383,10 @@ app.patch('/api/reviews/:id/false-alarm', verifyToken, async (req, res) => {
   }
 });
 
-// CHANGED: verifyGithubSignature middleware add kiya
+ 
 app.post('/webhook', verifyGithubSignature, async (req, res) => {
   console.log('Webhook received');
-
-  // CHANGED: GitHub 10 second mein jawab na mile to "timed out" maan leta hai.
-  // Is liye pehle turant 200 bhej dete hain, review ka kaam uske baad chalta rehta hai.
+ 
   res.status(200).send('Received');
 
   const { action, pull_request, installation } = req.body;
